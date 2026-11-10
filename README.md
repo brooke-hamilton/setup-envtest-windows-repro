@@ -1,15 +1,16 @@
 # Windows setup-envtest launch reproduction
 
-Reproduction of [the original report](https://gist.github.com/brooke-hamilton/24d82141fe9bbd5418f94bacd211eaf3).
+Reproduction of a Windows elevation error when launching `setup-envtest.exe`.
 It isolates process launch from Kubernetes asset downloads and Radius tests.
 The independent Go module pins `setup-envtest` to `v0.24.1`; no Radius checkout
-is used or modified.
+is used or modified. The tool's upstream repository is
+<https://github.com/kubernetes-sigs/controller-runtime>.
 
 ## Instructions for Copilot on a second Windows machine
 
 If asked "Try to reproduce the issue - look at the README for what to do",
-follow this runbook. All required source is in this repository; the gist and
-the original conversation are not needed to execute the experiment.
+follow this runbook. All required source and investigation context are in this
+repository; no external report or original conversation is needed.
 
 **Objective:** determine whether native Windows AMD64 exhibits the same launch
 failure observed on native Windows ARM64. Do not try to fix the machine or
@@ -19,7 +20,14 @@ The original Radius command failed before any tests or Kubernetes downloads:
 
 ```text
 go tool setup-envtest: fork/exec ...\setup-envtest.exe: The requested operation requires elevation.
+task: Command "GOOS=windows GOARCH=arm64 go tool setup-envtest use -p path '1.30.*' --arch amd64" failed: exit status 1
 ```
+
+The original task built/launched an ARM64 Windows tool and requested AMD64
+Kubernetes assets. These are separate architecture choices: `--arch amd64`
+selects downloaded assets, not the architecture of `setup-envtest.exe`.
+This reproduction uses only `--help`, so no asset architecture or downloads
+are involved.
 
 The executable name is not a reserved Windows filename. The hypothesis is
 filename-sensitive Windows elevation/compatibility handling when an explicit
@@ -188,7 +196,10 @@ PowerShell 7.6.9 and Go 1.27.4. The registry's legacy `ProductName` string says
 | Setup copy at the same path, with `asInvoker` manifest | Help printed; exit 2 |
 
 All three baseline binaries were ARM64 PE images (`0xAA64`), 7,574,528 bytes,
-with no embedded manifest. Their identical SHA256 was
+with no embedded manifest. An independent header check also confirmed
+PE32+ optional-header magic `0x020B` (64-bit), and embedded Go build metadata
+reported `GOARCH=arm64` and `GOOS=windows`. This was not a 32-bit executable.
+Their identical SHA256 was
 `539D20CEB54E45F53BC24618E2A8230F4376D766FB220AA8EDB94351A4C53721`.
 Adding the manifest changed only the local setup copy, which remained ARM64;
 its SHA256 became
@@ -198,6 +209,13 @@ the three paths, and `__COMPAT_LAYER` was unset. `EnableLUA` and
 `EnableInstallerDetection` were both 1; these values alone do not identify
 the mechanism.
 
+### AMD64 follow-up
+
+The reporter subsequently ran the reproduction on an AMD64 machine and reported
+that the bug did not reproduce. Its full report, Windows build, and configuration
+have not been collected in this repository. This is a useful comparison, not
+proof that CPU architecture alone determines the outcome.
+
 A same-directory filename-dependent result narrows the cause but does not name
 the Windows mechanism. Likewise, a successful `asInvoker` experiment shows the
 effect of an execution-level manifest; it does not prove classic installer
@@ -205,6 +223,16 @@ detection is responsible. That documented mechanism has restrictions including
 32-bit application applicability, so its relevance to ARM64 must not be assumed.
 Read-only checks here do not exhaust application compatibility databases,
 enterprise policy, security products, or all resource language variants.
+
+Microsoft documents classic installer detection as applying to 32-bit
+executables without a requested execution level, with filename keywords such
+as `setup`, `install`, and `update`:
+<https://learn.microsoft.com/en-us/windows/security/application-security/application-control/user-account-control/architecture>.
+The native 64-bit ARM64 result here does not fit that documented restriction.
+Treat this as a suspected Windows elevation/compatibility issue, not a confirmed
+identification of that specific mechanism. An upstream `asInvoker` manifest
+is a demonstrated mitigation, not evidence that the tool needs administrator
+privileges.
 
 No terminal elevation or policy changes are needed or attempted. Retained
 binaries and logs can be removed by deleting a specific completed run directory;
